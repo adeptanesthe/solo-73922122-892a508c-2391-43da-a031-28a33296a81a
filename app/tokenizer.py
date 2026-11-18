@@ -32,6 +32,11 @@ def encode(text: str) -> list[int]:
     return ids
 
 
+def char_id(ch: str) -> int:
+    """单个可打印 ASCII 字符对应的 token id（不在词表内则返回 UNK_ID）。"""
+    return _CHAR_TO_ID.get(ch, UNK_ID)
+
+
 def decode(ids: list[int]) -> str:
     """把 token id 序列解码为文本，遇到 EOS 截断。"""
     out: list[str] = []

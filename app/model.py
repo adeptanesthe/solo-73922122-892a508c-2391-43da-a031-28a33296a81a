@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -95,6 +97,24 @@ class CausalTransformer(nn.Module):
 
     def reset_stats(self) -> None:
         self.forward_count = 0
+
+    @contextmanager
+    def preserved_state(self):
+        """快照并在退出时恢复 forward_count 与 KV 缓存。
+
+        供水印生成等"只读"推理使用：水印前向不得改变原解码流程可观测的
+        权重、KV 缓存与前向计数。权重本就只读（推理不修改参数），这里保全
+        计数器与缓存引用；with 块内即使发生异常也保证恢复。
+        """
+        saved_count = self.forward_count
+        saved_cache = self._cache
+        saved_len = self.cache_len
+        try:
+            yield self
+        finally:
+            self.forward_count = saved_count
+            self._cache = saved_cache
+            self.cache_len = saved_len
 
     # ---- 前向 ----
     def _attention_layer(self, x: torch.Tensor,

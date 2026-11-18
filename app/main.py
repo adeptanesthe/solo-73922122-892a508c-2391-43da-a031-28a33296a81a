@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import tokenizer
+from . import tokenizer, watermark
 from .decoding import compare
 from .model import get_models
 
@@ -128,6 +128,77 @@ def presets() -> dict:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+# ---------------- 密钥水印：生成与核查 ----------------
+
+class WmGenerateRequest(BaseModel):
+    prompt: str
+    key: str
+    max_new: int
+
+
+class WmVerifyRequest(BaseModel):
+    prompt: str
+    key: str
+    continuation: str = ""
+
+
+def _check_printable(name: str, value: str, min_len: int, max_len: int) -> str | None:
+    """校验长度与可打印 ASCII（0x20～0x7E），返回中文错误信息或 None。"""
+    if not min_len <= len(value) <= max_len:
+        return f"{name}长度须为 {min_len}～{max_len} 个字符，当前 {len(value)} 个。"
+    if any(not 0x20 <= ord(c) <= 0x7E for c in value):
+        return f"{name}仅允许可打印 ASCII 字符（0x20～0x7E）。"
+    return None
+
+
+def _check_wm_inputs(prompt: str, key: str) -> str | None:
+    return (_check_printable("提示词", prompt, 1, 32)
+            or _check_printable("密钥", key, 8, 32))
+
+
+@app.post("/api/watermark/generate")
+def wm_generate(req: WmGenerateRequest) -> JSONResponse:
+    err = _check_wm_inputs(req.prompt, req.key)
+    if err is None and not 1 <= req.max_new <= 24:
+        err = "新 token 数须为 1～24。"
+    if err:
+        return JSONResponse(status_code=400, content={"error": err})
+    _, target = get_models()
+    res = watermark.generate(target, req.prompt, req.key, req.max_new)
+    return JSONResponse({
+        "prompt": res.prompt,
+        "text": res.text,
+        "tokens": _token_view(res.tokens),
+        "stopped_by_eos": res.stopped_by_eos,
+        "steps": res.steps,
+        "green_size": watermark.GREEN_SIZE,
+        "alphabet_size": len(watermark.PRINTABLE),
+    })
+
+
+@app.post("/api/watermark/verify")
+def wm_verify(req: WmVerifyRequest) -> JSONResponse:
+    err = (_check_wm_inputs(req.prompt, req.key)
+           or _check_printable("续写", req.continuation, 0, 24))
+    if err:
+        return JSONResponse(status_code=400, content={"error": err})
+    res = watermark.verify(req.prompt, req.key, req.continuation)
+    return JSONResponse({
+        "hits": res.hits,
+        "total": res.total,
+        "p_value": res.p_value,
+        "verdict": res.verdict,
+        "threshold": watermark.CLUE_THRESHOLD,
+        "null_rate": watermark.GREEN_RATE,
+        "positions": res.positions,
+    })
+
+
+@app.get("/watermark")
+def watermark_page() -> FileResponse:
+    return FileResponse(os.path.join(STATIC_DIR, "watermark.html"))
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
